@@ -295,9 +295,15 @@ class DatabaseHandler:
     
     def update_rental_payment_status(self, rental_id: int, payment_status: str):
         """Update rental payment status"""
-        query = "UPDATE rentals SET payment_status = ? WHERE id = ?"
-        self.cursor.execute(query, (payment_status, rental_id))
-        self.connection.commit()
+        try:
+            query = "UPDATE rentals SET payment_status = ? WHERE id = ?"
+            self.cursor.execute(query, (payment_status, rental_id))
+            self.connection.commit()
+            print(f"Updated rental {rental_id} payment status to {payment_status}")
+        except sqlite3.Error as e:
+            print(f"Database error updating payment status: {e}")
+            self.connection.rollback()
+            raise
     
     def delete_rental(self, rental_id: int):
         """Delete a rental and associated payments"""
@@ -403,6 +409,158 @@ class DatabaseHandler:
                 total_unpaid += rental['rental_price'] * years_diff
         
         return total_unpaid
+    
+    def get_tenant_totals(self) -> List[Dict]:
+        """Get totals for each tenant showing amount received and amount still owed"""
+        query = """
+        SELECT 
+            rt.id as renter_id,
+            rt.full_name as renter_name,
+            rt.phone as renter_phone,
+            COUNT(r.id) as total_rentals,
+            SUM(CASE WHEN r.payment_status = 'paid' THEN 1 ELSE 0 END) as paid_rentals,
+            SUM(CASE WHEN r.payment_status = 'unpaid' THEN 1 ELSE 0 END) as unpaid_rentals
+        FROM renters rt
+        LEFT JOIN rentals r ON rt.id = r.renter_id AND r.status = 'active'
+        GROUP BY rt.id, rt.full_name, rt.phone
+        ORDER BY rt.full_name
+        """
+        self.cursor.execute(query)
+        tenants = self.cursor.fetchall()
+        
+        tenant_totals = []
+        current_date = datetime.now()
+        
+        for tenant in tenants:
+            # Calculate total amount received (paid rentals)
+            paid_query = """
+            SELECT 
+                r.rental_price,
+                r.billing_type,
+                r.start_date,
+                CASE 
+                    WHEN r.end_date IS NULL THEN date('now')
+                    ELSE r.end_date 
+                END as end_date
+            FROM rentals r
+            WHERE r.renter_id = ? AND r.payment_status = 'paid' AND r.status = 'active'
+            """
+            self.cursor.execute(paid_query, (tenant['renter_id'],))
+            paid_rentals = self.cursor.fetchall()
+            
+            total_received = 0.0
+            for rental in paid_rentals:
+                start_date = datetime.strptime(rental['start_date'], '%Y-%m-%d')
+                end_date = datetime.strptime(rental['end_date'], '%Y-%m-%d') if rental['end_date'] else current_date
+                
+                if rental['billing_type'] == 'monthly':
+                    months_diff = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
+                    if end_date.day > start_date.day:
+                        months_diff += 1
+                    months_diff = max(1, months_diff)
+                    total_received += rental['rental_price'] * months_diff
+                else:  # yearly
+                    years_diff = end_date.year - start_date.year
+                    if end_date.month > start_date.month or (end_date.month == start_date.month and end_date.day > start_date.day):
+                        years_diff += 1
+                    years_diff = max(1, years_diff)
+                    total_received += rental['rental_price'] * years_diff
+            
+            # Calculate total amount still owed (unpaid rentals)
+            unpaid_query = """
+            SELECT 
+                r.rental_price,
+                r.billing_type,
+                r.start_date,
+                CASE 
+                    WHEN r.end_date IS NULL THEN date('now')
+                    ELSE r.end_date 
+                END as end_date
+            FROM rentals r
+            WHERE r.renter_id = ? AND r.payment_status = 'unpaid' AND r.status = 'active'
+            """
+            self.cursor.execute(unpaid_query, (tenant['renter_id'],))
+            unpaid_rentals = self.cursor.fetchall()
+            
+            total_owed = 0.0
+            for rental in unpaid_rentals:
+                start_date = datetime.strptime(rental['start_date'], '%Y-%m-%d')
+                end_date = datetime.strptime(rental['end_date'], '%Y-%m-%d') if rental['end_date'] else current_date
+                
+                if rental['billing_type'] == 'monthly':
+                    months_diff = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
+                    if end_date.day > start_date.day:
+                        months_diff += 1
+                    months_diff = max(1, months_diff)
+                    total_owed += rental['rental_price'] * months_diff
+                else:  # yearly
+                    years_diff = end_date.year - start_date.year
+                    if end_date.month > start_date.month or (end_date.month == start_date.month and end_date.day > start_date.day):
+                        years_diff += 1
+                    years_diff = max(1, years_diff)
+                    total_owed += rental['rental_price'] * years_diff
+            
+            tenant_totals.append({
+                'renter_id': tenant['renter_id'],
+                'renter_name': tenant['renter_name'],
+                'renter_phone': tenant['renter_phone'],
+                'total_rentals': tenant['total_rentals'],
+                'paid_rentals': tenant['paid_rentals'],
+                'unpaid_rentals': tenant['unpaid_rentals'],
+                'total_received': total_received,
+                'total_owed': total_owed,
+                'total_amount': total_received + total_owed
+            })
+        
+        return tenant_totals
+    
+    def get_rental_financial_summary(self, rental_id: int) -> Dict:
+        """Get financial summary for a specific rental"""
+        query = """
+        SELECT 
+            r.rental_price,
+            r.billing_type,
+            r.payment_status,
+            r.start_date,
+            CASE 
+                WHEN r.end_date IS NULL THEN date('now')
+                ELSE r.end_date 
+            END as end_date
+        FROM rentals r
+        WHERE r.id = ?
+        """
+        self.cursor.execute(query, (rental_id,))
+        rental = self.cursor.fetchone()
+        
+        if not rental:
+            return {'total_to_pay': 0.0, 'total_received': 0.0}
+        
+        current_date = datetime.now()
+        start_date = datetime.strptime(rental['start_date'], '%Y-%m-%d')
+        end_date = datetime.strptime(rental['end_date'], '%Y-%m-%d') if rental['end_date'] else current_date
+        
+        # Calculate total amount to pay based on periods
+        if rental['billing_type'] == 'monthly':
+            months_diff = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
+            if end_date.day > start_date.day:
+                months_diff += 1
+            months_diff = max(1, months_diff)
+            total_to_pay = rental['rental_price'] * months_diff
+        else:  # yearly
+            years_diff = end_date.year - start_date.year
+            if end_date.month > start_date.month or (end_date.month == start_date.month and end_date.day > start_date.day):
+                years_diff += 1
+            years_diff = max(1, years_diff)
+            total_to_pay = rental['rental_price'] * years_diff
+        
+        # Calculate total received (if paid, it's the total amount)
+        total_received = total_to_pay if rental['payment_status'] == 'paid' else 0.0
+        
+        return {
+            'total_to_pay': total_to_pay,
+            'total_received': total_received,
+            'still_owed': total_to_pay - total_received
+        }
     
     def get_total_income(self) -> float:
         """Calculate total income from paid payments"""

@@ -18,13 +18,21 @@ The Rental Management System is a desktop application designed to manage the ren
 
 ### 1.2 Key Features
 - ✅ **Product Management**: Add, edit, delete products (beds and equipment)
-- ✅ **Renter Management**: Store and manage renter information
-- ✅ **Rental Tracking**: Create rentals with monthly or yearly billing
-- ✅ **Payment Management**: Track payments, mark as paid/unpaid
-- ✅ **Cost Calculation**: Automatic calculation of monthly and yearly costs
-- ✅ **Payment Reminders**: Display unpaid monthly payments
-- ✅ **Dashboard**: Statistics and quick overview
+- ✅ **Rental Management**: Create and manage rentals with monthly/yearly billing
+- ✅ **Payment Tracking**: Monitor paid/unpaid status with automatic reminders
+- ✅ **Tenant Management**: Complete tenant information and contact details
+- ✅ **Tenant Totals**: View amount received and amount still owed for each tenant
+- ✅ **Dashboard**: Real-time statistics and payment reminders
+- ✅ **Authentication**: Secure login system with logout functionality
+- ✅ **Modern UI**: Professional interface with responsive design
 - ✅ **Offline Operation**: Works completely offline with local SQLite database
+
+### 1.4 New Features (Latest Update)
+- 🔥 **Tenant Totals Tab**: New dedicated tab showing comprehensive tenant financial summary
+- 💰 **Amount Received**: Track total payments received from each tenant
+- 💸 **Amount Still Owed**: Monitor outstanding balances per tenant
+- 📊 **Financial Summary**: Global totals for all tenants combined
+- 🔄 **Real-time Updates**: Automatic refresh when payment status changes
 
 ### 1.3 Technology Stack
 - **Language**: Python 3.8+
@@ -239,6 +247,37 @@ The main dashboard displays:
 2. Select one or more payments from the table
 3. Click "✅ Mark as Paid"
 4. Confirm
+
+### 5.5 Tenant Totals Management
+
+#### Viewing Tenant Financial Summary
+1. Go to "👥 Locataires" tab
+2. View comprehensive tenant financial data including:
+   - **Tenant Name**: Complete name of each tenant
+   - **Phone Number**: Contact information
+   - **Total Rentals**: Number of active rentals
+   - **Paid Rentals**: Count of rentals with paid status
+   - **Unpaid Rentals**: Count of rentals with unpaid status
+   - **Amount Received**: Total money received from tenant (all periods)
+   - **Amount Still Owed**: Outstanding balance for tenant
+
+#### Understanding the Calculations
+- **Amount Received**: Calculated based on paid rentals across all periods (months/years)
+- **Amount Still Owed**: Calculated based on unpaid rentals from start date to current/end date
+- **Global Totals**: Summary cards show totals for all tenants combined
+
+#### Real-time Updates
+- Tenant totals automatically refresh when:
+  - Payment status changes in rentals tab
+  - New rentals are created
+  - Rentals are marked as returned
+  - Manual refresh using "🔄 Actualiser" button
+
+#### Use Cases
+- **Financial Overview**: Get complete picture of all tenant balances
+- **Payment Follow-up**: Identify tenants with outstanding amounts
+- **Revenue Tracking**: Monitor total received vs total owed
+- **Tenant Management**: Make informed decisions about tenant relationships
 
 #### Payment Summary
 The payment window shows:

@@ -86,6 +86,7 @@ class MainWindow(QMainWindow):
         self.create_dashboard_tab()
         self.create_products_tab()
         self.create_rentals_tab()
+        self.create_tenants_tab()
         
         # Style
         self.apply_styles()
@@ -306,9 +307,9 @@ class MainWindow(QMainWindow):
         
         # Rentals table
         self.rentals_table = QTableWidget()
-        self.rentals_table.setColumnCount(9)
+        self.rentals_table.setColumnCount(11)
         self.rentals_table.setHorizontalHeaderLabels([
-            "ID", "Produit", "Locataire", "Téléphone", "Facturation", "Prix", "Date Début", "Statut", "Payé"
+            "ID", "Produit", "Locataire", "Téléphone", "Facturation", "Prix", "Date Début", "Statut", "Payé", "Total à Payer", "Montant Reçu"
         ])
         self.rentals_table.horizontalHeader().setStretchLastSection(True)
         self.rentals_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -317,6 +318,78 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.rentals_table)
         
         self.tabs.addTab(rentals_widget, "📋 Locations")
+    
+    def create_tenants_tab(self):
+        """Create tenants totals tab"""
+        tenants_widget = QWidget()
+        layout = QVBoxLayout()
+        tenants_widget.setLayout(layout)
+        
+        # Title and summary
+        title_layout = QHBoxLayout()
+        
+        title = QLabel("👥 Totaux par Locataire")
+        title.setFont(QFont("Arial", 18, QFont.Bold))
+        title.setStyleSheet("color: #2c3e50; padding: 10px;")
+        
+        btn_refresh = QPushButton("🔄 Actualiser")
+        btn_refresh.clicked.connect(self.load_tenants_totals)
+        btn_refresh.setMinimumHeight(40)
+        
+        title_layout.addWidget(title)
+        title_layout.addStretch()
+        title_layout.addWidget(btn_refresh)
+        
+        layout.addLayout(title_layout)
+        
+        # Summary cards
+        summary_layout = QHBoxLayout()
+        
+        self.tenants_total_received = self.create_stat_card("Total Reçu", "0.000 TND", "#27ae60")
+        self.tenants_total_owed = self.create_stat_card("Total Dû", "0.000 TND", "#e74c3c")
+        self.tenants_total_amount = self.create_stat_card("Total Global", "0.000 TND", "#3498db")
+        
+        summary_layout.addWidget(self.tenants_total_received)
+        summary_layout.addWidget(self.tenants_total_owed)
+        summary_layout.addWidget(self.tenants_total_amount)
+        
+        layout.addLayout(summary_layout)
+        
+        # Tenants table
+        self.tenants_table = QTableWidget()
+        self.tenants_table.setColumnCount(7)
+        self.tenants_table.setHorizontalHeaderLabels([
+            "Locataire", "Téléphone", "Total Locations", "Locations Payées", "Locations Impayées", 
+            "Montant Reçu", "Montant Dû"
+        ])
+        self.tenants_table.horizontalHeader().setStretchLastSection(True)
+        self.tenants_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tenants_table.setSelectionBehavior(QTableWidget.SelectRows)
+        
+        # Style the table
+        self.tenants_table.setStyleSheet("""
+            QTableWidget {
+                background-color: white;
+                border: 1px solid #bdc3c7;
+                border-radius: 5px;
+                alternate-background-color: #f8f9fa;
+            }
+            QTableWidget::item {
+                padding: 8px;
+                border-bottom: 1px solid #ecf0f1;
+            }
+            QHeaderView::section {
+                background-color: #34495e;
+                color: white;
+                padding: 10px;
+                font-weight: bold;
+                border: none;
+            }
+        """)
+        
+        layout.addWidget(self.tenants_table)
+        
+        self.tabs.addTab(tenants_widget, "👥 Locataires")
     
     def load_dashboard_data(self):
         """Load dashboard statistics and tables"""
@@ -403,6 +476,40 @@ class MainWindow(QMainWindow):
             paid_status = rental.get('payment_status', 'unpaid')
             paid_status_fr = 'payée' if paid_status == 'paid' else 'impayée'
             self.rentals_table.setItem(row, 8, QTableWidgetItem(paid_status_fr))
+            
+            # Get financial summary for this rental
+            financial_summary = self.db.get_rental_financial_summary(rental['id'])
+            total_to_pay = financial_summary['total_to_pay']
+            total_received = financial_summary['total_received']
+            
+            self.rentals_table.setItem(row, 9, QTableWidgetItem(f"{total_to_pay:.3f} TND"))
+            self.rentals_table.setItem(row, 10, QTableWidgetItem(f"{total_received:.3f} TND"))
+    
+    def load_tenants_totals(self):
+        """Load tenant totals into table"""
+        tenants = self.db.get_tenant_totals()
+        self.tenants_table.setRowCount(len(tenants))
+        
+        total_received = 0.0
+        total_owed = 0.0
+        
+        for row, tenant in enumerate(tenants):
+            self.tenants_table.setItem(row, 0, QTableWidgetItem(tenant['renter_name']))
+            self.tenants_table.setItem(row, 1, QTableWidgetItem(tenant['renter_phone'] or 'N/A'))
+            self.tenants_table.setItem(row, 2, QTableWidgetItem(str(tenant['total_rentals'])))
+            self.tenants_table.setItem(row, 3, QTableWidgetItem(str(tenant['paid_rentals'])))
+            self.tenants_table.setItem(row, 4, QTableWidgetItem(str(tenant['unpaid_rentals'])))
+            self.tenants_table.setItem(row, 5, QTableWidgetItem(f"{tenant['total_received']:.3f} TND"))
+            self.tenants_table.setItem(row, 6, QTableWidgetItem(f"{tenant['total_owed']:.3f} TND"))
+            
+            # Add to totals
+            total_received += tenant['total_received']
+            total_owed += tenant['total_owed']
+        
+        # Update summary cards
+        self.tenants_total_received.value_label.setText(f"{total_received:.3f} TND")
+        self.tenants_total_owed.value_label.setText(f"{total_owed:.3f} TND")
+        self.tenants_total_amount.value_label.setText(f"{total_received + total_owed:.3f} TND")
     
     def open_product_window(self):
         """Open product management window"""
@@ -477,9 +584,14 @@ class MainWindow(QMainWindow):
                                         QMessageBox.Yes | QMessageBox.No)
             if reply == QMessageBox.Yes:
                 try:
+                    # Update database
                     self.db.update_rental_payment_status(rental_id, new_status)
+                    
+                    # Refresh all relevant data
                     self.load_rentals()
                     self.load_dashboard_data()
+                    self.load_tenants_totals()
+                    
                     QMessageBox.information(self, "Succès", f"Location marquée comme {status_fr}")
                 except Exception as e:
                     QMessageBox.critical(self, "Erreur", f"Échec de mise à jour du statut: {str(e)}")
@@ -615,6 +727,7 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         self.load_products()
         self.load_rentals()
+        self.load_tenants_totals()
     
     def closeEvent(self, event):
         """Handle window close event"""
