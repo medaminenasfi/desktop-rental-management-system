@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 import os
 import calendar
+import shutil
 
 
 def parse_date(date_value) -> Optional[datetime]:
@@ -675,6 +676,16 @@ class DatabaseHandler:
         stats['total_income'] = self.get_total_income()
         
         return stats
+    
+    def save_all(self, backup_dir: str = "backups") -> str:
+        """Flush pending changes and create a full database backup."""
+        if self.connection:
+            self.connection.commit()
+        os.makedirs(backup_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join(backup_dir, f"rental_management_backup_{timestamp}.db")
+        shutil.copy2(self.db_name, backup_path)
+        return os.path.abspath(backup_path)
     
     def close(self):
         """Close database connection"""

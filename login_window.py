@@ -70,12 +70,6 @@ class LoginWindow(QDialog):
         
         layout.addLayout(form_layout)
         
-        # Default credentials info
-        info_label = QLabel("Par défaut:  ")
-        info_label.setAlignment(Qt.AlignCenter)
-        info_label.setStyleSheet("color: #3498db; font-size: 11px; padding: 10px;")
-        layout.addWidget(info_label)
-        
         # Buttons
         btn_layout = QHBoxLayout()
         
@@ -115,8 +109,8 @@ class LoginWindow(QDialog):
             QMessageBox.information(self, "Succès", f"Bienvenue, {username}!")
             self.accept()
         else:
-            QMessageBox.warning(self, "Échec de Connexion", 
-                              "Nom d'utilisateur ou mot de passe invalide.\n\nIdentifiants par défaut:\nNom d'utilisateur: admin\nMot de passe: admin123")
+            QMessageBox.warning(self, "Échec de Connexion",
+                              "Nom d'utilisateur ou mot de passe invalide.")
             self.password_input.clear()
             self.password_input.setFocus()
     

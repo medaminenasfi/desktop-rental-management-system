@@ -126,8 +126,27 @@ class MainWindow(QMainWindow):
         btn_new_rental.clicked.connect(self.open_rental_window)
         btn_new_rental.setMinimumHeight(50)
         
+        btn_save_all = QPushButton("💾 Sauvegarder Tout")
+        btn_save_all.clicked.connect(self.save_all_data)
+        btn_save_all.setMinimumHeight(50)
+        btn_save_all.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 5px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #219a52;
+            }
+        """)
+        
         quick_layout.addWidget(btn_new_product)
         quick_layout.addWidget(btn_new_rental)
+        quick_layout.addWidget(btn_save_all)
         
         quick_actions.setLayout(quick_layout)
         layout.addWidget(quick_actions)
@@ -584,6 +603,22 @@ class MainWindow(QMainWindow):
         """Open rental management window"""
         self.rental_window = RentalWindow(self.db, self)
         self.rental_window.show()
+    
+    def save_all_data(self):
+        """Save all data: commit database and create backup copy."""
+        try:
+            backup_path = self.db.save_all()
+            self.load_dashboard_data()
+            self.load_products()
+            self.load_rentals()
+            self.load_tenants_totals()
+            QMessageBox.information(
+                self, "Sauvegarde réussie",
+                f"Toutes les données ont été sauvegardées.\n\n"
+                f"Copie de sécurité:\n{backup_path}"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Erreur", f"Échec de la sauvegarde: {str(e)}")
     
     def mark_rental_returned(self):
         """Mark selected rental as returned"""
