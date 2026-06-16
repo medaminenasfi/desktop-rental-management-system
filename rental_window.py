@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QComboBox, QPushButton, QMessageBox,
                              QFormLayout, QDoubleSpinBox, QDateEdit, QTextEdit,
                              QGroupBox, QCheckBox)
-from PyQt5.QtCore import Qt, QDate
+from PyQt5.QtCore import Qt, QDate, QLocale
 from PyQt5.QtGui import QFont
 from datetime import datetime
 
@@ -25,7 +25,7 @@ class RentalWindow(QDialog):
     def init_ui(self):
         """Initialize the user interface"""
         self.setWindowTitle("Créer Nouvelle Location")
-        self.setGeometry(150, 150, 700, 700)
+        self.setGeometry(150, 150, 700, 820)
         self.setModal(True)
         
         layout = QVBoxLayout()
@@ -66,8 +66,15 @@ class RentalWindow(QDialog):
         renter_type_layout.addWidget(self.existing_renter_radio)
         renter_layout.addLayout(renter_type_layout)
         
+        # Search renter by name
+        self.renter_search = QLineEdit()
+        self.renter_search.setPlaceholderText("🔍 Rechercher locataire par nom...")
+        self.renter_search.textChanged.connect(self.filter_renters)
+        renter_layout.addWidget(self.renter_search)
+        
         # Existing renter dropdown
         self.renter_combo = QComboBox()
+        self.all_renters = []
         renter_layout.addWidget(self.renter_combo)
         
         # New renter form
@@ -123,13 +130,20 @@ class RentalWindow(QDialog):
         # Start date
         self.start_date = QDateEdit()
         self.start_date.setCalendarPopup(True)
+        self.start_date.setDisplayFormat("dd/MM/yyyy")
+        self.start_date.setLocale(QLocale(QLocale.French, QLocale.France))
         self.start_date.setDate(QDate.currentDate())
+        self.start_date.dateChanged.connect(self.calculate_cost)
         rental_layout.addRow("Date Début:", self.start_date)
         
         # End date
         self.end_date = QDateEdit()
         self.end_date.setCalendarPopup(True)
+        self.end_date.setDisplayFormat("dd/MM/yyyy")
+        self.end_date.setLocale(QLocale(QLocale.French, QLocale.France))
         self.end_date.setDate(QDate.currentDate().addYears(1))
+        self.end_date.setSpecialValueText("Non définie")
+        self.end_date.dateChanged.connect(self.calculate_cost)
         rental_layout.addRow("Date Fin (Optionnel):", self.end_date)
         
         # Payment status
@@ -143,6 +157,29 @@ class RentalWindow(QDialog):
         # Cost calculation
         cost_group = QGroupBox("Résumé Coûts")
         cost_layout = QFormLayout()
+        
+        self.total_brut_label = QLabel("0.000 TND")
+        self.total_brut_label.setFont(QFont("Arial", 11, QFont.Bold))
+        cost_layout.addRow("Total Brut:", self.total_brut_label)
+        
+        self.acompte = QDoubleSpinBox()
+        self.acompte.setRange(0, 1000000)
+        self.acompte.setDecimals(3)
+        self.acompte.setSuffix(" TND")
+        self.acompte.valueChanged.connect(self.calculate_cost)
+        cost_layout.addRow("Acompte:", self.acompte)
+        
+        self.escompte = QDoubleSpinBox()
+        self.escompte.setRange(0, 1000000)
+        self.escompte.setDecimals(3)
+        self.escompte.setSuffix(" TND")
+        self.escompte.valueChanged.connect(self.calculate_cost)
+        cost_layout.addRow("Escompte:", self.escompte)
+        
+        self.reste_label = QLabel("0.000 TND")
+        self.reste_label.setFont(QFont("Arial", 14, QFont.Bold))
+        self.reste_label.setStyleSheet("color: #e74c3c;")
+        cost_layout.addRow("Reste à Payer:", self.reste_label)
         
         self.monthly_cost_label = QLabel("0.000 TND")
         self.monthly_cost_label.setFont(QFont("Arial", 12, QFont.Bold))
@@ -185,7 +222,13 @@ class RentalWindow(QDialog):
             )
         
         # Load renters
-        renters = self.db.get_all_renters()
+        self.all_renters = self.db.get_all_renters()
+        self.populate_renter_combo(self.all_renters)
+        self.calculate_cost()
+    
+    def populate_renter_combo(self, renters):
+        """Fill renter combo with given list"""
+        current_id = self.renter_combo.currentData()
         self.renter_combo.clear()
         self.renter_combo.addItem("-- Sélectionner Locataire --", None)
         for renter in renters:
@@ -193,6 +236,20 @@ class RentalWindow(QDialog):
                 f"{renter['full_name']} - {renter['phone'] or 'Pas de téléphone'}",
                 renter['id']
             )
+        if current_id:
+            index = self.renter_combo.findData(current_id)
+            if index >= 0:
+                self.renter_combo.setCurrentIndex(index)
+    
+    def filter_renters(self, text):
+        """Filter renters by name search"""
+        if not self.existing_renter_radio.isChecked():
+            return
+        if not text.strip():
+            self.populate_renter_combo(self.all_renters)
+        else:
+            filtered = self.db.search_renters(text)
+            self.populate_renter_combo(filtered)
     
     def product_selected(self):
         """Handle product selection"""
@@ -209,9 +266,11 @@ class RentalWindow(QDialog):
         """Toggle between existing and new renter"""
         if checked:
             self.renter_combo.setEnabled(True)
+            self.renter_search.setEnabled(True)
             self.set_new_renter_form_visible(False)
         else:
             self.renter_combo.setEnabled(False)
+            self.renter_search.setEnabled(False)
             self.set_new_renter_form_visible(True)
     
     def set_new_renter_form_visible(self, visible):
@@ -221,18 +280,45 @@ class RentalWindow(QDialog):
             if item.widget():
                 item.widget().setVisible(visible)
     
+    def _count_periods(self) -> int:
+        """Count billing periods from selected dates."""
+        from database import count_billing_periods, parse_date
+        start = parse_date(self.start_date.date().toString("yyyy-MM-dd"))
+        end = parse_date(self.end_date.date().toString("yyyy-MM-dd"))
+        if not start or not end or end < start:
+            return 1
+        billing = 'monthly' if self.billing_combo.currentText() == 'mensuel' else 'yearly'
+        return count_billing_periods(start, end, billing)
+    
     def calculate_cost(self):
         """Calculate and display costs"""
         price = self.custom_price.value()
         billing_type = self.billing_combo.currentText()
+        periods = self._count_periods()
         
         if billing_type == "mensuel":
             monthly = price
             yearly = price * 12
-        else:  # annuel
+            total_brut = price * periods
+        else:
             monthly = price / 12
             yearly = price
+            total_brut = price * periods
         
+        acompte = self.acompte.value()
+        escompte = self.escompte.value()
+        total_net = max(0.0, total_brut - escompte)
+        reste = max(0.0, total_net - acompte)
+        
+        if escompte > total_brut:
+            self.escompte.setValue(total_brut)
+            return
+        if acompte > total_net:
+            self.acompte.setValue(total_net)
+            return
+        
+        self.total_brut_label.setText(f"{total_brut:.3f} TND")
+        self.reste_label.setText(f"{reste:.3f} TND")
         self.monthly_cost_label.setText(f"{monthly:.3f} TND")
         self.yearly_cost_label.setText(f"{yearly:.3f} TND")
     
@@ -276,22 +362,38 @@ class RentalWindow(QDialog):
         start_date = self.start_date.date().toString("yyyy-MM-dd")
         end_date = self.end_date.date().toString("yyyy-MM-dd")
         payment_status_fr = self.payment_status_combo.currentText()
-        # Convert French to English for database
         payment_status = 'paid' if payment_status_fr == 'payé' else 'unpaid'
+        acompte = self.acompte.value()
+        escompte = self.escompte.value()
+        
+        if self.end_date.date() < self.start_date.date():
+            QMessageBox.warning(self, "Attention", "La date de fin doit être après la date de début")
+            return
         
         if rental_price <= 0:
             QMessageBox.warning(self, "Attention", "Le prix de location doit être supérieur à 0")
             return
         
+        periods = self._count_periods()
+        total_brut = rental_price * periods
+        if escompte > total_brut:
+            QMessageBox.warning(self, "Attention", "L'escompte ne peut pas dépasser le total brut")
+            return
+        total_net = total_brut - escompte
+        if acompte > total_net:
+            QMessageBox.warning(self, "Attention", "L'acompte ne peut pas dépasser le montant net")
+            return
+        
         try:
-            # Create rental
             rental_id = self.db.add_rental(
                 product['id'], 
                 renter_id, 
                 billing_type, 
                 rental_price, 
                 start_date, 
-                end_date
+                end_date,
+                acompte,
+                escompte
             )
             
             # Set payment status
@@ -304,6 +406,7 @@ class RentalWindow(QDialog):
             if self.parent_window:
                 self.parent_window.load_rentals()
                 self.parent_window.load_dashboard_data()
+                self.parent_window.load_tenants_totals()
             
             self.close()
         

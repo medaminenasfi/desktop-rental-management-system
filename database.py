@@ -7,6 +7,74 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 import os
+import calendar
+
+
+def parse_date(date_value) -> Optional[datetime]:
+    """Parse a date string from DB or UI into datetime (date only)."""
+    if not date_value:
+        return None
+    if isinstance(date_value, datetime):
+        return date_value.replace(hour=0, minute=0, second=0, microsecond=0)
+    text = str(date_value).strip()
+    if not text:
+        return None
+    # Strip time portion if present (SQLite TIMESTAMP)
+    if ' ' in text:
+        text = text.split(' ')[0]
+    if 'T' in text:
+        text = text.split('T')[0]
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def format_date_display(date_value) -> str:
+    """Format date for French UI display (DD/MM/YYYY)."""
+    parsed = parse_date(date_value)
+    return parsed.strftime("%d/%m/%Y") if parsed else ""
+
+
+def format_datetime_display(date_value) -> str:
+    """Format datetime for French UI display (DD/MM/YYYY HH:MM)."""
+    if not date_value:
+        return ""
+    text = str(date_value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text.split('.')[0], fmt).strftime("%d/%m/%Y %H:%M")
+        except ValueError:
+            continue
+    parsed = parse_date(text)
+    return parsed.strftime("%d/%m/%Y") if parsed else text
+
+
+def add_months(dt: datetime, months: int = 1) -> datetime:
+    """Safely add months to a date (handles end-of-month)."""
+    month_index = dt.month - 1 + months
+    year = dt.year + month_index // 12
+    month = month_index % 12 + 1
+    last_day = calendar.monthrange(year, month)[1]
+    day = min(dt.day, last_day)
+    return dt.replace(year=year, month=month, day=day)
+
+
+def count_billing_periods(start_date: datetime, end_date: datetime, billing_type: str) -> int:
+    """Count monthly or yearly billing periods between two dates (inclusive)."""
+    if end_date < start_date:
+        return 0
+    if billing_type == 'monthly':
+        months = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
+        if end_date.day >= start_date.day:
+            months += 1
+        return max(1, months)
+    years = end_date.year - start_date.year
+    if (end_date.month, end_date.day) >= (start_date.month, start_date.day):
+        years += 1
+    return max(1, years)
 
 
 class DatabaseHandler:
@@ -44,8 +112,25 @@ class DatabaseHandler:
         
         # Add payment_status column if it doesn't exist (migration)
         self._migrate_payment_status()
+        self._migrate_financial_columns()
         
         self.connection.commit()
+    
+    def _migrate_financial_columns(self):
+        """Add acompte and escompte columns if missing."""
+        try:
+            self.cursor.execute("PRAGMA table_info(rentals)")
+            columns = [column[1] for column in self.cursor.fetchall()]
+            if 'acompte' not in columns:
+                self.cursor.execute(
+                    "ALTER TABLE rentals ADD COLUMN acompte REAL NOT NULL DEFAULT 0"
+                )
+            if 'escompte' not in columns:
+                self.cursor.execute(
+                    "ALTER TABLE rentals ADD COLUMN escompte REAL NOT NULL DEFAULT 0"
+                )
+        except sqlite3.Error as e:
+            print(f"Migration note: {e}")
     
     def _migrate_payment_status(self):
         """Add payment_status column to existing rentals table if missing"""
@@ -94,6 +179,8 @@ class DatabaseHandler:
                 end_date DATE,
                 status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'returned')),
                 payment_status TEXT NOT NULL DEFAULT 'unpaid' CHECK(payment_status IN ('paid', 'unpaid')),
+                acompte REAL NOT NULL DEFAULT 0,
+                escompte REAL NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
                 FOREIGN KEY (renter_id) REFERENCES renters(id) ON DELETE CASCADE
@@ -165,6 +252,16 @@ class DatabaseHandler:
         self.cursor.execute(query)
         return [dict(row) for row in self.cursor.fetchall()]
     
+    def search_renters(self, name: str) -> List[Dict]:
+        """Search renters by name (case-insensitive partial match)."""
+        if not name.strip():
+            return self.get_all_renters()
+        query = """SELECT * FROM renters 
+                   WHERE LOWER(full_name) LIKE LOWER(?) 
+                   ORDER BY full_name"""
+        self.cursor.execute(query, (f"%{name.strip()}%",))
+        return [dict(row) for row in self.cursor.fetchall()]
+    
     def get_renter_by_id(self, renter_id: int) -> Optional[Dict]:
         """Get renter by ID"""
         query = "SELECT * FROM renters WHERE id = ?"
@@ -189,12 +286,14 @@ class DatabaseHandler:
     # ==================== RENTAL OPERATIONS ====================
     
     def add_rental(self, product_id: int, renter_id: int, billing_type: str, 
-                   rental_price: float, start_date: str, end_date: str = None) -> int:
+                   rental_price: float, start_date: str, end_date: str = None,
+                   acompte: float = 0.0, escompte: float = 0.0) -> int:
         """Add a new rental and create payment schedule"""
         query = """INSERT INTO rentals (product_id, renter_id, billing_type, rental_price, 
-                   start_date, end_date, status) VALUES (?, ?, ?, ?, ?, ?, 'active')"""
+                   start_date, end_date, status, acompte, escompte) 
+                   VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)"""
         self.cursor.execute(query, (product_id, renter_id, billing_type, rental_price, 
-                                   start_date, end_date))
+                                   start_date, end_date, acompte, escompte))
         rental_id = self.cursor.lastrowid
         
         # Create payment schedule
@@ -203,11 +302,24 @@ class DatabaseHandler:
         self.connection.commit()
         return rental_id
     
+    def _effective_end_date(self, end_date: str = None) -> datetime:
+        """Resolve rental end date (defaults to 1 year from today if not set)."""
+        if end_date:
+            parsed = parse_date(end_date)
+            if parsed:
+                return parsed
+        return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=365)
+    
     def _create_payment_schedule(self, rental_id: int, billing_type: str, 
                                  rental_price: float, start_date: str, end_date: str = None):
         """Create payment schedule based on billing type"""
-        start = datetime.strptime(start_date, "%Y-%m-%d")
-        end = datetime.strptime(end_date, "%Y-%m-%d") if end_date else datetime.now() + timedelta(days=365)
+        start = parse_date(start_date)
+        if not start:
+            raise ValueError(f"Date de début invalide: {start_date}")
+        end = self._effective_end_date(end_date)
+        
+        if end < start:
+            raise ValueError("La date de fin doit être après la date de début")
         
         current_date = start
         
@@ -220,11 +332,7 @@ class DatabaseHandler:
                           VALUES (?, ?, ?, ?, 'unpaid')"""
                 self.cursor.execute(query, (rental_id, payment_date, rental_price, payment_month))
                 
-                # Move to next month
-                if current_date.month == 12:
-                    current_date = current_date.replace(year=current_date.year + 1, month=1)
-                else:
-                    current_date = current_date.replace(month=current_date.month + 1)
+                current_date = add_months(current_date, 1)
         
         elif billing_type == 'yearly':
             while current_date <= end:
@@ -235,7 +343,6 @@ class DatabaseHandler:
                           VALUES (?, ?, ?, ?, 'unpaid')"""
                 self.cursor.execute(query, (rental_id, payment_date, rental_price, payment_month))
                 
-                # Move to next year
                 current_date = current_date.replace(year=current_date.year + 1)
     
     def get_all_rentals(self) -> List[Dict]:
@@ -243,7 +350,8 @@ class DatabaseHandler:
         query = """
         SELECT 
             r.id, r.product_id, r.renter_id, r.billing_type, r.rental_price,
-            r.start_date, r.end_date, r.status, r.created_at,
+            r.start_date, r.end_date, r.status, r.payment_status,
+            r.acompte, r.escompte, r.created_at,
             p.name as product_name, p.type as product_type,
             rn.full_name as renter_name, rn.phone as renter_phone
         FROM rentals r
@@ -259,7 +367,8 @@ class DatabaseHandler:
         query = """
         SELECT 
             r.id, r.product_id, r.renter_id, r.billing_type, r.rental_price,
-            r.start_date, r.end_date, r.status,
+            r.start_date, r.end_date, r.status, r.payment_status,
+            r.acompte, r.escompte,
             p.name as product_name, p.type as product_type,
             rn.full_name as renter_name, rn.phone as renter_phone
         FROM rentals r
@@ -366,49 +475,69 @@ class DatabaseHandler:
         self.cursor.execute(query, (payment_id,))
         self.connection.commit()
     
+    def update_tenant_payment_status(self, renter_id: int, payment_status: str):
+        """Update payment status for all active rentals of a tenant."""
+        query = """UPDATE rentals SET payment_status = ? 
+                   WHERE renter_id = ? AND status = 'active'"""
+        self.cursor.execute(query, (payment_status, renter_id))
+        self.connection.commit()
+    
+    def _calculate_rental_amounts(self, rental: Dict) -> Dict:
+        """Calculate brut, net, acompte, reste, received and owed for a rental."""
+        start = parse_date(rental['start_date'])
+        end_raw = rental.get('end_date')
+        end = parse_date(end_raw) if end_raw else datetime.now().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        if not start:
+            return {
+                'total_brut': 0.0, 'total_net': 0.0, 'acompte': 0.0,
+                'reste': 0.0, 'total_received': 0.0, 'still_owed': 0.0
+            }
+        
+        periods = count_billing_periods(start, end, rental['billing_type'])
+        total_brut = rental['rental_price'] * periods
+        acompte = float(rental.get('acompte') or 0)
+        escompte = float(rental.get('escompte') or 0)
+        total_net = max(0.0, total_brut - escompte)
+        reste = max(0.0, total_net - acompte)
+        
+        if rental.get('payment_status') == 'paid':
+            total_received = total_net
+            still_owed = 0.0
+        else:
+            total_received = acompte
+            still_owed = reste
+        
+        return {
+            'total_brut': total_brut,
+            'total_net': total_net,
+            'acompte': acompte,
+            'escompte': escompte,
+            'reste': reste,
+            'total_to_pay': total_net,
+            'total_received': total_received,
+            'still_owed': still_owed,
+            'periods': periods
+        }
+    
     # ==================== STATISTICS & REPORTS ====================
     
     def get_total_unpaid_amount(self) -> float:
-        """Get total amount owed across all unpaid rentals for all periods"""
+        """Get total amount still owed across all unpaid active rentals."""
         query = """
-        SELECT 
-            r.rental_price,
-            r.billing_type,
-            r.start_date,
-            CASE 
-                WHEN r.end_date IS NULL THEN date('now')
-                ELSE r.end_date 
-            END as end_date
+        SELECT r.rental_price, r.billing_type, r.start_date, r.end_date,
+               r.payment_status, r.acompte, r.escompte
         FROM rentals r
         WHERE r.payment_status = 'unpaid' AND r.status = 'active'
         """
         self.cursor.execute(query)
         rentals = self.cursor.fetchall()
         
-        total_unpaid = 0.0
-        current_date = datetime.now()
-        
-        for rental in rentals:
-            start_date = datetime.strptime(rental['start_date'], '%Y-%m-%d')
-            end_date = datetime.strptime(rental['end_date'], '%Y-%m-%d') if rental['end_date'] else current_date
-            
-            # Calculate the number of periods owed
-            if rental['billing_type'] == 'monthly':
-                # Calculate months owed (including partial month as full month)
-                months_diff = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
-                if end_date.day > start_date.day:
-                    months_diff += 1
-                months_diff = max(1, months_diff)  # At least 1 month
-                total_unpaid += rental['rental_price'] * months_diff
-            else:  # yearly
-                # Calculate years owed
-                years_diff = end_date.year - start_date.year
-                if end_date.month > start_date.month or (end_date.month == start_date.month and end_date.day > start_date.day):
-                    years_diff += 1
-                years_diff = max(1, years_diff)  # At least 1 year
-                total_unpaid += rental['rental_price'] * years_diff
-        
-        return total_unpaid
+        return sum(
+            self._calculate_rental_amounts(dict(row))['still_owed']
+            for row in rentals
+        )
     
     def get_tenant_totals(self) -> List[Dict]:
         """Get totals for each tenant showing amount received and amount still owed"""
@@ -429,84 +558,43 @@ class DatabaseHandler:
         tenants = self.cursor.fetchall()
         
         tenant_totals = []
-        current_date = datetime.now()
         
         for tenant in tenants:
-            # Calculate total amount received (paid rentals)
-            paid_query = """
-            SELECT 
-                r.rental_price,
-                r.billing_type,
-                r.start_date,
-                CASE 
-                    WHEN r.end_date IS NULL THEN date('now')
-                    ELSE r.end_date 
-                END as end_date
-            FROM rentals r
-            WHERE r.renter_id = ? AND r.payment_status = 'paid' AND r.status = 'active'
+            rentals_query = """
+            SELECT rental_price, billing_type, start_date, end_date,
+                   payment_status, acompte, escompte
+            FROM rentals
+            WHERE renter_id = ? AND status = 'active'
             """
-            self.cursor.execute(paid_query, (tenant['renter_id'],))
-            paid_rentals = self.cursor.fetchall()
+            self.cursor.execute(rentals_query, (tenant['renter_id'],))
+            rentals = self.cursor.fetchall()
             
             total_received = 0.0
-            for rental in paid_rentals:
-                start_date = datetime.strptime(rental['start_date'], '%Y-%m-%d')
-                end_date = datetime.strptime(rental['end_date'], '%Y-%m-%d') if rental['end_date'] else current_date
-                
-                if rental['billing_type'] == 'monthly':
-                    months_diff = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
-                    if end_date.day > start_date.day:
-                        months_diff += 1
-                    months_diff = max(1, months_diff)
-                    total_received += rental['rental_price'] * months_diff
-                else:  # yearly
-                    years_diff = end_date.year - start_date.year
-                    if end_date.month > start_date.month or (end_date.month == start_date.month and end_date.day > start_date.day):
-                        years_diff += 1
-                    years_diff = max(1, years_diff)
-                    total_received += rental['rental_price'] * years_diff
-            
-            # Calculate total amount still owed (unpaid rentals)
-            unpaid_query = """
-            SELECT 
-                r.rental_price,
-                r.billing_type,
-                r.start_date,
-                CASE 
-                    WHEN r.end_date IS NULL THEN date('now')
-                    ELSE r.end_date 
-                END as end_date
-            FROM rentals r
-            WHERE r.renter_id = ? AND r.payment_status = 'unpaid' AND r.status = 'active'
-            """
-            self.cursor.execute(unpaid_query, (tenant['renter_id'],))
-            unpaid_rentals = self.cursor.fetchall()
-            
             total_owed = 0.0
-            for rental in unpaid_rentals:
-                start_date = datetime.strptime(rental['start_date'], '%Y-%m-%d')
-                end_date = datetime.strptime(rental['end_date'], '%Y-%m-%d') if rental['end_date'] else current_date
-                
-                if rental['billing_type'] == 'monthly':
-                    months_diff = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
-                    if end_date.day > start_date.day:
-                        months_diff += 1
-                    months_diff = max(1, months_diff)
-                    total_owed += rental['rental_price'] * months_diff
-                else:  # yearly
-                    years_diff = end_date.year - start_date.year
-                    if end_date.month > start_date.month or (end_date.month == start_date.month and end_date.day > start_date.day):
-                        years_diff += 1
-                    years_diff = max(1, years_diff)
-                    total_owed += rental['rental_price'] * years_diff
+            for rental in rentals:
+                amounts = self._calculate_rental_amounts(dict(rental))
+                total_received += amounts['total_received']
+                total_owed += amounts['still_owed']
+            
+            paid_count = tenant['paid_rentals'] or 0
+            unpaid_count = tenant['unpaid_rentals'] or 0
+            if paid_count > 0 and unpaid_count > 0:
+                payment_label = 'partiel'
+            elif unpaid_count > 0:
+                payment_label = 'impayé'
+            elif paid_count > 0:
+                payment_label = 'payé'
+            else:
+                payment_label = 'aucune location'
             
             tenant_totals.append({
                 'renter_id': tenant['renter_id'],
                 'renter_name': tenant['renter_name'],
                 'renter_phone': tenant['renter_phone'],
-                'total_rentals': tenant['total_rentals'],
-                'paid_rentals': tenant['paid_rentals'],
-                'unpaid_rentals': tenant['unpaid_rentals'],
+                'total_rentals': tenant['total_rentals'] or 0,
+                'paid_rentals': paid_count,
+                'unpaid_rentals': unpaid_count,
+                'payment_status': payment_label,
                 'total_received': total_received,
                 'total_owed': total_owed,
                 'total_amount': total_received + total_owed
@@ -517,50 +605,22 @@ class DatabaseHandler:
     def get_rental_financial_summary(self, rental_id: int) -> Dict:
         """Get financial summary for a specific rental"""
         query = """
-        SELECT 
-            r.rental_price,
-            r.billing_type,
-            r.payment_status,
-            r.start_date,
-            CASE 
-                WHEN r.end_date IS NULL THEN date('now')
-                ELSE r.end_date 
-            END as end_date
-        FROM rentals r
-        WHERE r.id = ?
+        SELECT rental_price, billing_type, payment_status, start_date, end_date,
+               acompte, escompte
+        FROM rentals
+        WHERE id = ?
         """
         self.cursor.execute(query, (rental_id,))
         rental = self.cursor.fetchone()
         
         if not rental:
-            return {'total_to_pay': 0.0, 'total_received': 0.0}
+            return {
+                'total_brut': 0.0, 'total_net': 0.0, 'acompte': 0.0,
+                'escompte': 0.0, 'reste': 0.0,
+                'total_to_pay': 0.0, 'total_received': 0.0, 'still_owed': 0.0
+            }
         
-        current_date = datetime.now()
-        start_date = datetime.strptime(rental['start_date'], '%Y-%m-%d')
-        end_date = datetime.strptime(rental['end_date'], '%Y-%m-%d') if rental['end_date'] else current_date
-        
-        # Calculate total amount to pay based on periods
-        if rental['billing_type'] == 'monthly':
-            months_diff = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
-            if end_date.day > start_date.day:
-                months_diff += 1
-            months_diff = max(1, months_diff)
-            total_to_pay = rental['rental_price'] * months_diff
-        else:  # yearly
-            years_diff = end_date.year - start_date.year
-            if end_date.month > start_date.month or (end_date.month == start_date.month and end_date.day > start_date.day):
-                years_diff += 1
-            years_diff = max(1, years_diff)
-            total_to_pay = rental['rental_price'] * years_diff
-        
-        # Calculate total received (if paid, it's the total amount)
-        total_received = total_to_pay if rental['payment_status'] == 'paid' else 0.0
-        
-        return {
-            'total_to_pay': total_to_pay,
-            'total_received': total_received,
-            'still_owed': total_to_pay - total_received
-        }
+        return self._calculate_rental_amounts(dict(rental))
     
     def get_total_income(self) -> float:
         """Calculate total income from paid payments"""

@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS rentals (
     end_date DATE,
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'returned')),
     payment_status TEXT NOT NULL DEFAULT 'unpaid' CHECK(payment_status IN ('paid', 'unpaid')),
+    acompte REAL NOT NULL DEFAULT 0,
+    escompte REAL NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
     FOREIGN KEY (renter_id) REFERENCES renters(id) ON DELETE CASCADE

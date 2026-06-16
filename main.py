@@ -6,10 +6,10 @@ import sys
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QTableWidget, 
                              QTableWidgetItem, QMessageBox, QTabWidget, QFrame,
-                             QHeaderView, QGroupBox, QGridLayout)
+                             QHeaderView, QGroupBox, QGridLayout, QLineEdit)
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QIcon
-from database import DatabaseHandler
+from PyQt5.QtGui import QFont, QIcon, QColor
+from database import DatabaseHandler, format_date_display, format_datetime_display
 from product_window import ProductWindow
 from rental_window import RentalWindow
 from login_window import LoginWindow
@@ -137,9 +137,9 @@ class MainWindow(QMainWindow):
         recent_layout = QVBoxLayout()
         
         self.recent_rentals_table = QTableWidget()
-        self.recent_rentals_table.setColumnCount(6)
+        self.recent_rentals_table.setColumnCount(7)
         self.recent_rentals_table.setHorizontalHeaderLabels([
-            "Produit", "Locataire", "Téléphone", "Facturation", "Prix", "Date Début"
+            "Produit", "Locataire", "Téléphone", "Facturation", "Prix", "Date Début", "Date Fin"
         ])
         self.recent_rentals_table.horizontalHeader().setStretchLastSection(True)
         self.recent_rentals_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -307,9 +307,11 @@ class MainWindow(QMainWindow):
         
         # Rentals table
         self.rentals_table = QTableWidget()
-        self.rentals_table.setColumnCount(11)
+        self.rentals_table.setColumnCount(15)
         self.rentals_table.setHorizontalHeaderLabels([
-            "ID", "Produit", "Locataire", "Téléphone", "Facturation", "Prix", "Date Début", "Statut", "Payé", "Total à Payer", "Montant Reçu"
+            "ID", "Produit", "Locataire", "Téléphone", "Facturation", "Prix",
+            "Date Début", "Date Fin", "Statut", "Payé", "Acompte", "Escompte",
+            "Reste", "Total Net", "Montant Reçu"
         ])
         self.rentals_table.horizontalHeader().setStretchLastSection(True)
         self.rentals_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -336,8 +338,13 @@ class MainWindow(QMainWindow):
         btn_refresh.clicked.connect(self.load_tenants_totals)
         btn_refresh.setMinimumHeight(40)
         
+        btn_toggle_tenant_paid = QPushButton("💰 Basculer Payé / Impayé")
+        btn_toggle_tenant_paid.clicked.connect(self.toggle_tenant_paid_status)
+        btn_toggle_tenant_paid.setMinimumHeight(40)
+        
         title_layout.addWidget(title)
         title_layout.addStretch()
+        title_layout.addWidget(btn_toggle_tenant_paid)
         title_layout.addWidget(btn_refresh)
         
         layout.addLayout(title_layout)
@@ -355,12 +362,18 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(summary_layout)
         
+        # Search tenants
+        self.tenant_search = QLineEdit()
+        self.tenant_search.setPlaceholderText("🔍 Rechercher locataire par nom...")
+        self.tenant_search.textChanged.connect(self.load_tenants_totals)
+        layout.addWidget(self.tenant_search)
+        
         # Tenants table
         self.tenants_table = QTableWidget()
-        self.tenants_table.setColumnCount(7)
+        self.tenants_table.setColumnCount(8)
         self.tenants_table.setHorizontalHeaderLabels([
-            "Locataire", "Téléphone", "Total Locations", "Locations Payées", "Locations Impayées", 
-            "Montant Reçu", "Montant Dû"
+            "Locataire", "Téléphone", "Statut Paiement", "Total Locations",
+            "Locations Payées", "Locations Impayées", "Montant Reçu", "Montant Dû"
         ])
         self.tenants_table.horizontalHeader().setStretchLastSection(True)
         self.tenants_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -409,9 +422,11 @@ class MainWindow(QMainWindow):
             self.recent_rentals_table.setItem(row, 0, QTableWidgetItem(rental['product_name']))
             self.recent_rentals_table.setItem(row, 1, QTableWidgetItem(rental['renter_name']))
             self.recent_rentals_table.setItem(row, 2, QTableWidgetItem(rental['renter_phone'] or ''))
-            self.recent_rentals_table.setItem(row, 3, QTableWidgetItem(rental['billing_type']))
+            billing_fr = 'mensuel' if rental['billing_type'] == 'monthly' else 'annuel'
+            self.recent_rentals_table.setItem(row, 3, QTableWidgetItem(billing_fr))
             self.recent_rentals_table.setItem(row, 4, QTableWidgetItem(f"{rental['rental_price']:.3f} TND"))
-            self.recent_rentals_table.setItem(row, 5, QTableWidgetItem(rental['start_date']))
+            self.recent_rentals_table.setItem(row, 5, QTableWidgetItem(format_date_display(rental['start_date'])))
+            self.recent_rentals_table.setItem(row, 6, QTableWidgetItem(format_date_display(rental.get('end_date'))))
         
         # Load payment reminders - unpaid rentals
         self.load_payment_reminders()
@@ -466,28 +481,37 @@ class MainWindow(QMainWindow):
             self.rentals_table.setItem(row, 1, QTableWidgetItem(rental['product_name']))
             self.rentals_table.setItem(row, 2, QTableWidgetItem(rental['renter_name']))
             self.rentals_table.setItem(row, 3, QTableWidgetItem(rental['renter_phone'] or ''))
-            self.rentals_table.setItem(row, 4, QTableWidgetItem(rental['billing_type']))
+            billing_fr = 'mensuel' if rental['billing_type'] == 'monthly' else 'annuel'
+            self.rentals_table.setItem(row, 4, QTableWidgetItem(billing_fr))
             self.rentals_table.setItem(row, 5, QTableWidgetItem(f"{rental['rental_price']:.3f} TND"))
-            self.rentals_table.setItem(row, 6, QTableWidgetItem(rental['start_date']))
-            # Translate status to French
+            self.rentals_table.setItem(row, 6, QTableWidgetItem(format_date_display(rental['start_date'])))
+            self.rentals_table.setItem(row, 7, QTableWidgetItem(format_date_display(rental.get('end_date'))))
             status_fr = 'actif' if rental['status'] == 'active' else 'retourné'
-            self.rentals_table.setItem(row, 7, QTableWidgetItem(status_fr))
-            # Translate payment status to French
+            self.rentals_table.setItem(row, 8, QTableWidgetItem(status_fr))
             paid_status = rental.get('payment_status', 'unpaid')
             paid_status_fr = 'payée' if paid_status == 'paid' else 'impayée'
-            self.rentals_table.setItem(row, 8, QTableWidgetItem(paid_status_fr))
+            paid_item = QTableWidgetItem(paid_status_fr)
+            if paid_status == 'paid':
+                paid_item.setForeground(QColor('#27ae60'))
+            else:
+                paid_item.setForeground(QColor('#e74c3c'))
+            self.rentals_table.setItem(row, 9, paid_item)
             
-            # Get financial summary for this rental
-            financial_summary = self.db.get_rental_financial_summary(rental['id'])
-            total_to_pay = financial_summary['total_to_pay']
-            total_received = financial_summary['total_received']
-            
-            self.rentals_table.setItem(row, 9, QTableWidgetItem(f"{total_to_pay:.3f} TND"))
-            self.rentals_table.setItem(row, 10, QTableWidgetItem(f"{total_received:.3f} TND"))
+            financial = self.db.get_rental_financial_summary(rental['id'])
+            self.rentals_table.setItem(row, 10, QTableWidgetItem(f"{financial['acompte']:.3f} TND"))
+            self.rentals_table.setItem(row, 11, QTableWidgetItem(f"{financial['escompte']:.3f} TND"))
+            self.rentals_table.setItem(row, 12, QTableWidgetItem(f"{financial['reste']:.3f} TND"))
+            self.rentals_table.setItem(row, 13, QTableWidgetItem(f"{financial['total_to_pay']:.3f} TND"))
+            self.rentals_table.setItem(row, 14, QTableWidgetItem(f"{financial['total_received']:.3f} TND"))
     
     def load_tenants_totals(self):
         """Load tenant totals into table"""
         tenants = self.db.get_tenant_totals()
+        search = getattr(self, 'tenant_search', None)
+        if search and search.text().strip():
+            term = search.text().strip().lower()
+            tenants = [t for t in tenants if term in t['renter_name'].lower()]
+        
         self.tenants_table.setRowCount(len(tenants))
         
         total_received = 0.0
@@ -496,13 +520,23 @@ class MainWindow(QMainWindow):
         for row, tenant in enumerate(tenants):
             self.tenants_table.setItem(row, 0, QTableWidgetItem(tenant['renter_name']))
             self.tenants_table.setItem(row, 1, QTableWidgetItem(tenant['renter_phone'] or 'N/A'))
-            self.tenants_table.setItem(row, 2, QTableWidgetItem(str(tenant['total_rentals'])))
-            self.tenants_table.setItem(row, 3, QTableWidgetItem(str(tenant['paid_rentals'])))
-            self.tenants_table.setItem(row, 4, QTableWidgetItem(str(tenant['unpaid_rentals'])))
-            self.tenants_table.setItem(row, 5, QTableWidgetItem(f"{tenant['total_received']:.3f} TND"))
-            self.tenants_table.setItem(row, 6, QTableWidgetItem(f"{tenant['total_owed']:.3f} TND"))
             
-            # Add to totals
+            status_item = QTableWidgetItem(tenant['payment_status'])
+            if tenant['payment_status'] == 'payé':
+                status_item.setForeground(QColor('#27ae60'))
+            elif tenant['payment_status'] == 'impayé':
+                status_item.setForeground(QColor('#e74c3c'))
+            elif tenant['payment_status'] == 'partiel':
+                status_item.setForeground(QColor('#f39c12'))
+            self.tenants_table.setItem(row, 2, status_item)
+            self.tenants_table.item(row, 0).setData(Qt.UserRole, tenant['renter_id'])
+            
+            self.tenants_table.setItem(row, 3, QTableWidgetItem(str(tenant['total_rentals'])))
+            self.tenants_table.setItem(row, 4, QTableWidgetItem(str(tenant['paid_rentals'])))
+            self.tenants_table.setItem(row, 5, QTableWidgetItem(str(tenant['unpaid_rentals'])))
+            self.tenants_table.setItem(row, 6, QTableWidgetItem(f"{tenant['total_received']:.3f} TND"))
+            self.tenants_table.setItem(row, 7, QTableWidgetItem(f"{tenant['total_owed']:.3f} TND"))
+            
             total_received += tenant['total_received']
             total_owed += tenant['total_owed']
         
@@ -563,6 +597,7 @@ class MainWindow(QMainWindow):
                 self.db.update_rental_status(rental_id, 'returned')
                 self.load_rentals()
                 self.load_dashboard_data()
+                self.load_tenants_totals()
                 QMessageBox.information(self, "Succès", "Location marquée comme retournée")
         else:
             QMessageBox.warning(self, "Attention", "Veuillez sélectionner une location")
@@ -572,7 +607,7 @@ class MainWindow(QMainWindow):
         row = self.rentals_table.currentRow()
         if row >= 0:
             rental_id = int(self.rentals_table.item(row, 0).text())
-            current_status_fr = self.rentals_table.item(row, 8).text()
+            current_status_fr = self.rentals_table.item(row, 9).text()
             # Convert French to English for database operation (handle both 'payé' and 'payée')
             current_status = 'paid' if current_status_fr in ['payé', 'payée'] else 'unpaid'
             new_status = 'unpaid' if current_status == 'paid' else 'paid'
@@ -598,6 +633,38 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Attention", "Veuillez sélectionner une location")
     
+    def toggle_tenant_paid_status(self):
+        """Toggle paid/unpaid status for all active rentals of selected tenant"""
+        row = self.tenants_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Attention", "Veuillez sélectionner un locataire")
+            return
+        
+        renter_id = self.tenants_table.item(row, 0).data(Qt.UserRole)
+        current_status = self.tenants_table.item(row, 2).text()
+        
+        if current_status in ('payé', 'partiel'):
+            new_status = 'unpaid'
+            status_fr = 'impayé'
+        else:
+            new_status = 'paid'
+            status_fr = 'payé'
+        
+        reply = QMessageBox.question(
+            self, "Confirmation",
+            f"Marquer toutes les locations actives de ce locataire comme {status_fr}?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            try:
+                self.db.update_tenant_payment_status(renter_id, new_status)
+                self.load_rentals()
+                self.load_dashboard_data()
+                self.load_tenants_totals()
+                QMessageBox.information(self, "Succès", f"Locataire marqué comme {status_fr}")
+            except Exception as e:
+                QMessageBox.critical(self, "Erreur", f"Échec de mise à jour: {str(e)}")
+    
     def delete_rental(self):
         """Delete selected rental"""
         row = self.rentals_table.currentRow()
@@ -611,6 +678,7 @@ class MainWindow(QMainWindow):
                     self.db.delete_rental(rental_id)
                     self.load_rentals()
                     self.load_dashboard_data()
+                    self.load_tenants_totals()
                     QMessageBox.information(self, "Succès", "Location supprimée avec succès")
                 except Exception as e:
                     QMessageBox.critical(self, "Erreur", f"Échec de suppression de la location: {str(e)}")
